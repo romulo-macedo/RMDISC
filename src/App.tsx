@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Send, Users, Hash, LogOut, MessageSquare, Menu, Plus, Mic, MicOff, Volume2 } from 'lucide-react';
+import Peer, { DataConnection, MediaConnection } from 'peerjs';
+import { v4 as uuidv4 } from 'uuid';
 
 interface ChatMessage {
   id: string;
@@ -13,7 +15,7 @@ interface ChatMessage {
 interface Channel {
   id: string;
   name: string;
-  voiceUsers?: string[];
+  voiceUsers: string[];
 }
 
 interface User {
@@ -32,20 +34,19 @@ function AudioPlayer({ stream }: { stream: MediaStream }) {
 }
 
 export default function App() {
-  const [isJoined, setIsJoined] = useState(false);
+  const [mode, setMode] = useState<'LOGIN' | 'HOST' | 'GUEST'>('LOGIN');
   const [username, setUsername] = useState('');
   const [roomCode, setRoomCode] = useState('');
   
   const [myUserId, setMyUserId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
+  const [chatUsers, setChatUsers] = useState<User[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   
   const [activeChannelId, setActiveChannelId] = useState<string>('geral');
   const [isCreatingChannel, setIsCreatingChannel] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
   const [messageInput, setMessageInput] = useState('');
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const [error, setError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -54,292 +55,376 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
   const activeChannelIdRef = useRef(activeChannelId);
-  const localStreamRef = useRef<MediaStream | null>(localStream);
-  const myUserIdRef = useRef<string>(myUserId);
-  const peersRef = useRef<Record<string, RTCPeerConnection>>({});
   const isMutedRef = useRef(isMuted);
+  const myUserIdRef = useRef<string>(myUserId);
+  const localStreamRef = useRef<MediaStream | null>(localStream);
+
+  // PeerJS instances
+  const peerRef = useRef<Peer | null>(null);
+  const hostDataConnectionsRef = useRef<DataConnection[]>([]);
+  const guestDataConnectionRef = useRef<DataConnection | null>(null);
+  const mediaConnectionsRef = useRef<Record<string, MediaConnection>>({});
+
+  // Host State Source of Truth
+  const hostStateRef = useRef({
+    messages: [] as ChatMessage[],
+    users: [] as User[],
+    channels: [{ id: 'geral', name: 'geral', voiceUsers: [] }] as Channel[]
+  });
 
   useEffect(() => { activeChannelIdRef.current = activeChannelId; }, [activeChannelId]);
-  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
-  useEffect(() => { myUserIdRef.current = myUserId; }, [myUserId]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
+  useEffect(() => { myUserIdRef.current = myUserId; }, [myUserId]);
+  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const toggleMute = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
         track.enabled = isMuted;
       });
     }
     setIsMuted(!isMuted);
   };
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  useEffect(() => {
-    return () => {
-      if (ws) {
-        ws.close();
-      }
-    };
-  }, [ws]);
-
-  const destroyPeerConnection = (userId: string) => {
-    if (peersRef.current[userId]) {
-      peersRef.current[userId].close();
-      delete peersRef.current[userId];
-    }
-    setRemoteStreams(prev => {
-      const next = { ...prev };
-      delete next[userId];
-      return next;
-    });
-  };
-
-  const createPeerConnection = (targetUserId: string, channelId: string, stream: MediaStream, socket: WebSocket) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'WEBRTC_ICE_CANDIDATE',
-          targetUserId,
-          channelId,
-          candidate: event.candidate,
-        }));
-      }
-    };
-
-    pc.ontrack = (event) => {
-      setRemoteStreams(prev => ({
-        ...prev,
-        [targetUserId]: event.streams[0]
-      }));
-    };
-
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          destroyPeerConnection(targetUserId);
-      }
-    };
-
-    peersRef.current[targetUserId] = pc;
-    return pc;
-  };
-
-  const handleJoin = (e: React.FormEvent) => {
+  const handleCreateRoom = (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !roomCode.trim()) {
-      setError('Nome de usuário e código da sala são obrigatórios.');
+      setError('Nome e Código são obrigatórios.');
+      return;
+    }
+    
+    const hostPeerId = `chat-live-${roomCode.trim().toLowerCase()}`;
+    const peer = new Peer(hostPeerId, {
+      debug: 2
+    });
+
+    peer.on('open', (id) => {
+      setMyUserId(id);
+      setMode('HOST');
+      setError('');
+
+      hostStateRef.current.users = [{ id, username: username.trim() }];
+      syncHostStateToUI();
+    });
+
+    peer.on('connection', (conn) => {
+      conn.on('open', () => {
+        hostDataConnectionsRef.current.push(conn);
+        
+        conn.on('data', (dataStr: any) => {
+          const data = JSON.parse(dataStr);
+          handleHostReceiveAction(data);
+        });
+
+        conn.on('close', () => {
+          handleGuestDisconnect(conn.peer);
+        });
+      });
+    });
+
+    peer.on('call', handleIncomingCall);
+    peer.on('error', (err) => {
+      console.error(err);
+      setError('Erro ao criar sala. Talvez o código já esteja em uso por outro Host.');
+    });
+
+    peerRef.current = peer;
+  };
+
+  const handleJoinRoom = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || !roomCode.trim()) {
+      setError('Nome e Código são obrigatórios.');
       return;
     }
 
-    const host = window.location.host;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const hostPeerId = `chat-live-${roomCode.trim().toLowerCase()}`;
+    // Random ID for guest
+    const peer = new Peer({ debug: 2 });
+
+    peer.on('open', (id) => {
+      setMyUserId(id);
+      
+      const conn = peer.connect(hostPeerId);
+      conn.on('open', () => {
+        guestDataConnectionRef.current = conn;
+        setMode('GUEST');
+        setError('');
+
+        conn.send(JSON.stringify({
+          type: 'JOIN',
+          userId: id,
+          username: username.trim()
+        }));
+      });
+
+      conn.on('data', (dataStr: any) => {
+        const data = JSON.parse(dataStr);
+        handleGuestReceiveSync(data);
+      });
+
+      conn.on('close', () => {
+        handleLeave();
+      });
+
+      conn.on('error', () => {
+        setError('O Host desconectou ou não foi encontrado.');
+      });
+    });
+
+    peer.on('call', handleIncomingCall);
+    peer.on('error', (err) => {
+      console.error(err);
+      setError('Erro de conexão P2P.');
+    });
+
+    peerRef.current = peer;
+  };
+
+  // --- HOST LOGIC --- //
+  const handleHostReceiveAction = (data: any) => {
+    const s = hostStateRef.current;
     
-    const socket = new WebSocket(`${protocol}//${host}`);
+    if (data.type === 'JOIN') {
+      s.users.push({ id: data.userId, username: data.username });
+      
+      const joinMsg: ChatMessage = {
+        id: uuidv4(),
+        userId: 'SYSTEM',
+        username: 'Sistema',
+        text: `${data.username} entrou na sala.`,
+        timestamp: Date.now(),
+        channelId: 'geral'
+      };
+      s.messages.push(joinMsg);
+      broadcastHostState();
+    }
+    else if (data.type === 'MESSAGE') {
+      const msg: ChatMessage = {
+        id: uuidv4(),
+        userId: data.userId,
+        username: data.username,
+        text: data.text,
+        timestamp: Date.now(),
+        channelId: data.channelId
+      };
+      s.messages.push(msg);
+      if (s.messages.length > 500) s.messages.shift();
+      broadcastHostState();
+    }
+    else if (data.type === 'CREATE_CHANNEL') {
+      s.channels.push({
+        id: uuidv4(),
+        name: data.channelName,
+        voiceUsers: []
+      });
+      broadcastHostState();
+    }
+    else if (data.type === 'JOIN_VOICE') {
+      // Remove from old
+      s.channels.forEach(c => {
+        c.voiceUsers = c.voiceUsers.filter(id => id !== data.userId);
+      });
+      // Add to new
+      const ch = s.channels.find(c => c.id === data.channelId);
+      if (ch) ch.voiceUsers.push(data.userId);
+      broadcastHostState();
+    }
+    else if (data.type === 'LEAVE_VOICE') {
+      s.channels.forEach(c => {
+        c.voiceUsers = c.voiceUsers.filter(id => id !== data.userId);
+      });
+      broadcastHostState();
+    }
+  };
 
-    socket.onopen = () => {
-      socket.send(JSON.stringify({
-        type: 'JOIN',
-        roomCode: roomCode.trim().toLowerCase(),
-        username: username.trim()
-      }));
-      setWs(socket);
-      setIsJoined(true);
-      setError('');
-    };
+  const handleGuestDisconnect = (peerId: string) => {
+    hostDataConnectionsRef.current = hostDataConnectionsRef.current.filter(c => c.peer !== peerId);
+    
+    const s = hostStateRef.current;
+    const user = s.users.find(u => u.id === peerId);
+    if (user) {
+      s.users = s.users.filter(u => u.id !== peerId);
+      s.channels.forEach(c => {
+        c.voiceUsers = c.voiceUsers.filter(id => id !== peerId);
+      });
 
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      s.messages.push({
+        id: uuidv4(),
+        userId: 'SYSTEM',
+        username: 'Sistema',
+        text: `${user.username} saiu da sala.`,
+        timestamp: Date.now(),
+        channelId: 'geral'
+      });
+      broadcastHostState();
+    }
+  };
 
-      switch (data.type) {
-        case 'ROOM_STATE':
-          setMyUserId(data.payload.myUserId);
-          setMessages(data.payload.messages);
-          setUsers(data.payload.users);
-          setChannels(data.payload.channels);
-          if (data.payload.channels && data.payload.channels.length > 0) {
-            setActiveChannelId(data.payload.channels[0].id);
-          }
-          break;
-        case 'USER_JOINED':
-        case 'USER_LEFT':
-          setUsers(data.payload.users);
-          setMessages(prev => [...prev, data.payload.systemMessage]);
-          break;
-        case 'NEW_MESSAGE':
-          setMessages(prev => [...prev, data.payload]);
-          break;
-        case 'CHANNEL_CREATED':
-          setChannels(prev => [...prev, data.payload]);
-          break;
-        case 'VOICE_STATE_UPDATED':
-          setChannels(data.payload);
-          break;
-        case 'USER_JOINED_VOICE': {
-          const { userId, channelId } = data.payload;
-          if (channelId === activeChannelIdRef.current && localStreamRef.current && userId !== myUserIdRef.current) {
-            const pc = createPeerConnection(userId, channelId, localStreamRef.current, socket);
-            pc.createOffer().then(offer => {
-              pc.setLocalDescription(offer);
-              socket.send(JSON.stringify({
-                type: 'WEBRTC_OFFER',
-                targetUserId: userId,
-                channelId,
-                sdp: offer
-              }));
-            });
-          }
-          break;
-        }
-        case 'WEBRTC_OFFER': {
-          const { senderId, sdp, channelId } = data;
-          if (channelId !== activeChannelIdRef.current) break;
+  const broadcastHostState = () => {
+    syncHostStateToUI();
+    const str = JSON.stringify({
+      type: 'STATE_SYNC',
+      payload: hostStateRef.current
+    });
+    hostDataConnectionsRef.current.forEach(c => {
+      if (c.open) c.send(str);
+    });
+  };
 
-          if (localStreamRef.current && senderId !== myUserIdRef.current) {
-            const pc = createPeerConnection(senderId, activeChannelIdRef.current, localStreamRef.current, socket);
-            pc.setRemoteDescription(new RTCSessionDescription(sdp))
-              .then(() => pc.createAnswer())
-              .then(answer => {
-                pc.setLocalDescription(answer);
-                socket.send(JSON.stringify({
-                  type: 'WEBRTC_ANSWER',
-                  targetUserId: senderId,
-                  channelId,
-                  sdp: answer
-                }));
-              });
-          }
-          break;
-        }
-        case 'WEBRTC_ANSWER': {
-          const { senderId, sdp, channelId } = data;
-          if (channelId !== activeChannelIdRef.current) break;
+  const syncHostStateToUI = () => {
+    setChatUsers([...hostStateRef.current.users]);
+    setMessages([...hostStateRef.current.messages]);
+    setChannels([...hostStateRef.current.channels]);
+  };
 
-          const pc = peersRef.current[senderId];
-          if (pc) {
-            pc.setRemoteDescription(new RTCSessionDescription(sdp));
-          }
-          break;
-        }
-        case 'WEBRTC_ICE_CANDIDATE': {
-          const { senderId, candidate, channelId } = data;
-          if (channelId !== activeChannelIdRef.current) break;
+  // --- GUEST LOGIC --- //
+  const handleGuestReceiveSync = (data: any) => {
+    if (data.type === 'STATE_SYNC') {
+      setMessages(data.payload.messages);
+      setChatUsers(data.payload.users);
+      setChannels(data.payload.channels);
+    }
+  };
 
-          const pc = peersRef.current[senderId];
-          if (pc) {
-            pc.addIceCandidate(new RTCIceCandidate(candidate));
-          }
-          break;
-        }
-        case 'USER_LEFT_VOICE': {
-          const { userId } = data.payload;
-          destroyPeerConnection(userId);
-          break;
-        }
-      }
-    };
+  const sendAction = (action: any) => {
+    const fullAction = { ...action, userId: myUserIdRef.current, username };
+    if (mode === 'HOST') {
+      handleHostReceiveAction(fullAction);
+    } else if (guestDataConnectionRef.current?.open) {
+      guestDataConnectionRef.current.send(JSON.stringify(fullAction));
+    }
+  };
 
-    socket.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setError('Erro de conexão. Tente novamente mais tarde.');
-    };
-
-    socket.onclose = () => {
-      setIsJoined(false);
-      setMessages([]);
-      setUsers([]);
-      setWs(null);
-    };
+  // --- MEDIA LOGIC (WebRTC via PeerJS inside same channel) --- //
+  const handleIncomingCall = (call: MediaConnection) => {
+    // using a ref for local stream to ensure latest is always fetched on incoming call
+    const currentStream = localStreamRef.current;
+    if (call.metadata?.channelId === activeChannelIdRef.current && currentStream) {
+       call.answer(currentStream);
+       call.on('stream', remoteStream => {
+          setRemoteStreams(prev => ({ ...prev, [call.peer]: remoteStream }));
+       });
+       call.on('close', () => {
+          setRemoteStreams(prev => {
+             const next = { ...prev };
+             delete next[call.peer];
+             return next;
+          });
+       });
+       mediaConnectionsRef.current[call.peer] = call;
+    } else {
+       call.close();
+    }
   };
 
   useEffect(() => {
-    if (activeChannelId && isJoined && ws) {
-      let stream: MediaStream | null = null;
-      let isCancelled = false;
+    if (mode === 'LOGIN') return;
+    
+    let isCancelled = false;
+    let stream: MediaStream | null = null;
 
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(s => {
-          if (isCancelled) {
-            s.getTracks().forEach(t => t.stop());
-            return;
-          }
-          s.getAudioTracks().forEach(t => {
-            t.enabled = !isMutedRef.current;
-          });
-          stream = s;
-          setLocalStream(s);
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'JOIN_VOICE', channelId: activeChannelId }));
-          }
-        })
-        .catch(e => {
-          console.error("Microphone access denied or error:", e);
-        });
+    // Join new Audio Channel
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(s => {
+        if (isCancelled) {
+          s.getTracks().forEach(t => t.stop());
+          return;
+        }
+        s.getAudioTracks().forEach(t => { t.enabled = !isMutedRef.current; });
+        stream = s;
+        setLocalStream(s);
 
-      return () => {
-         isCancelled = true;
-         if (stream) {
-            stream.getTracks().forEach(t => t.stop());
-         }
-         setLocalStream(null);
-         
-         if (ws && ws.readyState === WebSocket.OPEN) {
-           ws.send(JSON.stringify({ type: 'LEAVE_VOICE', channelId: activeChannelId }));
-         }
+        sendAction({ type: 'JOIN_VOICE', channelId: activeChannelId });
 
-         Object.values(peersRef.current).forEach(pc => pc.close());
-         peersRef.current = {};
-         setRemoteStreams({});
-      };
-    }
-  }, [activeChannelId, isJoined, ws]);
+        // Call everyone currently in the channel!
+        const currentChannel = channels.find(c => c.id === activeChannelId);
+        if (currentChannel && peerRef.current) {
+           currentChannel.voiceUsers.forEach(peerId => {
+               if (peerId !== myUserIdRef.current && !mediaConnectionsRef.current[peerId]) {
+                   const call = peerRef.current!.call(peerId, s, { metadata: { channelId: activeChannelId } });
+                   if (call) {
+                     call.on('stream', remoteStream => {
+                        setRemoteStreams(prev => ({ ...prev, [peerId]: remoteStream }));
+                     });
+                     call.on('close', () => {
+                        setRemoteStreams(prev => {
+                           const next = { ...prev };
+                           delete next[peerId];
+                           return next;
+                        });
+                     });
+                     mediaConnectionsRef.current[peerId] = call;
+                   }
+               }
+           });
+        }
+      })
+      .catch(e => console.error("Mic access denied/error:", e));
 
+    return () => {
+       isCancelled = true;
+       if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+       }
+       setLocalStream(null);
+       
+       sendAction({ type: 'LEAVE_VOICE', channelId: activeChannelId });
+
+       // Close all active calls
+       Object.values(mediaConnectionsRef.current).forEach((c: MediaConnection) => c.close());
+       mediaConnectionsRef.current = {};
+       setRemoteStreams(prev => { 
+          return {}; 
+       });
+    };
+  }, [activeChannelId, mode]);
+
+  // --- UI ACTIONS --- //
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageInput.trim() || !ws) return;
+    if (!messageInput.trim()) return;
 
-    ws.send(JSON.stringify({
+    sendAction({
       type: 'MESSAGE',
       text: messageInput.trim(),
       channelId: activeChannelId
-    }));
+    });
 
     setMessageInput('');
   };
 
   const handleCreateChannel = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newChannelName.trim() || !ws) return;
+    if (!newChannelName.trim()) return;
     
-    ws.send(JSON.stringify({
+    sendAction({
       type: 'CREATE_CHANNEL',
       channelName: newChannelName.trim()
-    }));
+    });
     
     setNewChannelName('');
     setIsCreatingChannel(false);
   };
 
   const handleLeave = () => {
-    if (ws) {
-      ws.close();
+    if (peerRef.current) {
+      peerRef.current.destroy();
     }
+    setMode('LOGIN');
+    setMessages([]);
+    setChatUsers([]);
+    setChannels([]);
+    setError('');
+    // Remote streams are cleared by unmount or voice hooks
   };
 
-  if (!isJoined) {
+  if (mode === 'LOGIN') {
     return (
       <div className="min-h-screen bg-zinc-900 flex items-center justify-center p-4">
         <div className="bg-zinc-800 p-8 rounded-xl shadow-2xl w-full max-w-md border border-zinc-700">
@@ -349,17 +434,19 @@ export default function App() {
             </div>
           </div>
           <h1 className="text-2xl font-bold text-center text-white mb-2">Entrar no Chat</h1>
-          <p className="text-zinc-400 text-center mb-8 text-sm">Conecte-se com seus amigos usando um código de acesso.</p>
+          <p className="text-zinc-400 text-center mb-8 text-sm">
+            Hospede a sala no seu navegador, ou entre usando um código.
+          </p>
           
-          <form onSubmit={handleJoin} className="space-y-4">
+          <form className="space-y-4">
             <div>
-              <label className="block text-zinc-400 text-sm font-medium mb-1 uppercase tracking-wider">Como as pessoas te chamarão?</label>
+              <label className="block text-zinc-400 text-sm font-medium mb-1 uppercase tracking-wider">Seu Apelido</label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-md px-4 py-3 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                placeholder="Seu apelido..."
+                placeholder="Ex: romulo"
                 maxLength={20}
               />
             </div>
@@ -370,19 +457,36 @@ export default function App() {
                 value={roomCode}
                 onChange={(e) => setRoomCode(e.target.value.toLowerCase())}
                 className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-md px-4 py-3 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                placeholder="ex: sala-secreta-123"
+                placeholder="ex: sala-secreta"
                 maxLength={30}
               />
             </div>
             
             {error && <p className="text-red-400 text-sm">{error}</p>}
             
-            <button
-              type="submit"
-              className="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white font-medium py-3 rounded-md transition-colors mt-4"
-            >
-              Entrar na Sala
-            </button>
+            <div className="flex flex-col gap-3 pt-4">
+              <button
+                onClick={handleJoinRoom}
+                type="button"
+                className="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white font-medium py-3 rounded-md transition-colors"
+              >
+                Entrar na Sala como Convidado
+              </button>
+              
+              <div className="relative flex py-2 items-center">
+                  <div className="flex-grow border-t border-zinc-700"></div>
+                  <span className="flex-shrink-0 mx-4 text-zinc-500 text-xs">OU</span>
+                  <div className="flex-grow border-t border-zinc-700"></div>
+              </div>
+
+              <button
+                onClick={handleCreateRoom}
+                type="button"
+                className="w-full bg-zinc-700 hover:bg-zinc-600 active:bg-zinc-500 text-zinc-200 font-medium py-3 rounded-md transition-colors border border-zinc-600"
+              >
+                Criar / Hospedar Sala
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -391,9 +495,12 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-zinc-800 font-sans text-zinc-100 overflow-hidden">
-      {Object.entries(remoteStreams).map(([userId, stream]) => (
-        <AudioPlayer key={userId} stream={stream} />
-      ))}
+      {Object.entries(remoteStreams).map(([userId, stream]) => {
+        const mediaStream = stream as MediaStream;
+        if (!mediaStream || typeof mediaStream.getTracks !== 'function') return null;
+        return <AudioPlayer key={userId} stream={mediaStream} />;
+      })}
+      
       {sidebarOpen && (
         <div 
           className="fixed inset-0 bg-black/50 z-20 md:hidden"
@@ -407,11 +514,16 @@ export default function App() {
         md:relative md:translate-x-0 z-30
         w-64 bg-zinc-900 flex flex-col border-r border-zinc-800 transition-transform duration-200 ease-in-out
       `}>
-        <div className="h-14 flex items-center px-4 border-b border-zinc-800 font-bold shadow-sm">
+        <div className="h-14 flex items-center px-4 border-b border-zinc-800 font-bold shadow-sm justify-between">
           <div className="flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
             <Hash className="w-5 h-5 text-zinc-400 shrink-0" />
             <span>{roomCode}</span>
           </div>
+          {mode === 'HOST' && (
+            <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded border border-red-500/50" title="Você está hospedando o servidor. Se fechar, a sala cai!">
+              HOST
+            </span>
+          )}
         </div>
         
         <div className="flex-1 overflow-y-auto p-4 space-y-8">
@@ -430,7 +542,7 @@ export default function App() {
                     <span className="truncate text-sm font-medium">{channel.name}</span>
                     {activeChannelId === channel.id && localStream && (
                       isMuted ? (
-                        <MicOff className="w-3 h-3 text-red-400 ml-auto shrink-0" />
+                        <MicOff className="w-3 h-3 text-red-500 ml-auto shrink-0" />
                       ) : (
                         <Mic className="w-3 h-3 text-green-400 ml-auto shrink-0" />
                       )
@@ -439,7 +551,7 @@ export default function App() {
                   {channel.voiceUsers && channel.voiceUsers.length > 0 && (
                     <div className="ml-6 py-1 space-y-1">
                       {channel.voiceUsers.map(vuId => {
-                         const u = users.find(usr => usr.id === vuId);
+                         const u = chatUsers.find(usr => usr.id === vuId);
                          if (!u) return null;
                          return (
                            <div key={vuId} className="flex items-center gap-2 text-xs text-zinc-400">
@@ -485,10 +597,10 @@ export default function App() {
           <div>
             <h2 className="text-xs uppercase font-bold text-zinc-400 tracking-wider mb-4 flex items-center gap-2">
               <Users className="w-4 h-4" />
-              Online — {users.length}
+              Online — {chatUsers.length}
             </h2>
             <ul className="space-y-2">
-              {users.map(user => (
+              {chatUsers.map(user => (
                 <li key={user.id} className="flex items-center gap-3 text-zinc-300">
                   <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-300 font-bold shrink-0">
                     {user.username.charAt(0).toUpperCase()}
@@ -533,7 +645,6 @@ export default function App() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-[#313338]">
-        {/* Header */}
         <header className="h-14 flex items-center px-4 border-b border-zinc-900 shadow-sm shrink-0 bg-[#313338]">
           <button 
             className="md:hidden mr-4 text-zinc-400 hover:text-zinc-200"
@@ -564,7 +675,7 @@ export default function App() {
             const isConsecutive = index > 0 && 
                                   filteredMessages[index - 1].userId === msg.userId && 
                                   !isSystem && 
-                                  (msg.timestamp - filteredMessages[index - 1].timestamp < 300000); // 5 minutes
+                                  (msg.timestamp - filteredMessages[index - 1].timestamp < 300000);
 
             if (isSystem) {
               return (
