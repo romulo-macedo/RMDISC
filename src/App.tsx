@@ -303,9 +303,16 @@ export default function App() {
 
   // --- MEDIA LOGIC (WebRTC via PeerJS inside same channel) --- //
   const handleIncomingCall = (call: MediaConnection) => {
+    if (call.peer === myUserIdRef.current) {
+       call.close();
+       return;
+    }
     // using a ref for local stream to ensure latest is always fetched on incoming call
     const currentStream = localStreamRef.current;
     if (call.metadata?.channelId === activeChannelIdRef.current && currentStream) {
+       if (mediaConnectionsRef.current[call.peer]) {
+          mediaConnectionsRef.current[call.peer].close();
+       }
        call.answer(currentStream);
        call.on('stream', remoteStream => {
           setRemoteStreams(prev => ({ ...prev, [call.peer]: remoteStream }));
@@ -313,7 +320,9 @@ export default function App() {
        call.on('close', () => {
           setRemoteStreams(prev => {
              const next = { ...prev };
-             delete next[call.peer];
+             if (mediaConnectionsRef.current[call.peer] === call) {
+                 delete next[call.peer];
+             }
              return next;
           });
        });
@@ -330,7 +339,13 @@ export default function App() {
     let stream: MediaStream | null = null;
 
     // Join new Audio Channel
-    navigator.mediaDevices.getUserMedia({ audio: true })
+    navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      } 
+    })
       .then(s => {
         if (isCancelled) {
           s.getTracks().forEach(t => t.stop());
@@ -346,21 +361,27 @@ export default function App() {
         const currentChannel = channels.find(c => c.id === activeChannelId);
         if (currentChannel && peerRef.current) {
            currentChannel.voiceUsers.forEach(peerId => {
-               if (peerId !== myUserIdRef.current && !mediaConnectionsRef.current[peerId]) {
-                   const call = peerRef.current!.call(peerId, s, { metadata: { channelId: activeChannelId } });
-                   if (call) {
-                     call.on('stream', remoteStream => {
-                        setRemoteStreams(prev => ({ ...prev, [peerId]: remoteStream }));
-                     });
-                     call.on('close', () => {
-                        setRemoteStreams(prev => {
-                           const next = { ...prev };
-                           delete next[peerId];
-                           return next;
-                        });
-                     });
-                     mediaConnectionsRef.current[peerId] = call;
-                   }
+               if (peerId === myUserIdRef.current) return;
+
+               if (mediaConnectionsRef.current[peerId]) {
+                   mediaConnectionsRef.current[peerId].close();
+               }
+
+               const call = peerRef.current!.call(peerId, s, { metadata: { channelId: activeChannelId } });
+               if (call) {
+                 call.on('stream', remoteStream => {
+                    setRemoteStreams(prev => ({ ...prev, [peerId]: remoteStream }));
+                 });
+                 call.on('close', () => {
+                    setRemoteStreams(prev => {
+                       const next = { ...prev };
+                       if (mediaConnectionsRef.current[peerId] === call) {
+                          delete next[peerId];
+                       }
+                       return next;
+                    });
+                 });
+                 mediaConnectionsRef.current[peerId] = call;
                }
            });
         }
@@ -424,10 +445,15 @@ export default function App() {
     // Remote streams are cleared by unmount or voice hooks
   };
 
+  const handleChannelSelect = (id: string) => {
+    setActiveChannelId(id);
+    setSidebarOpen(false); // Auto-close sidebar on mobile
+  };
+
   if (mode === 'LOGIN') {
     return (
-      <div className="min-h-screen bg-zinc-900 flex items-center justify-center p-4">
-        <div className="bg-zinc-800 p-8 rounded-xl shadow-2xl w-full max-w-md border border-zinc-700">
+      <div className="min-h-[100dvh] bg-zinc-900 flex items-center justify-center p-4">
+        <div className="bg-zinc-800 p-6 md:p-8 rounded-xl shadow-2xl w-full max-w-[95%] md:max-w-md border border-zinc-700">
           <div className="flex justify-center mb-6">
             <div className="bg-indigo-500 p-3 rounded-full">
               <MessageSquare className="w-8 h-8 text-white" />
@@ -445,7 +471,7 @@ export default function App() {
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-md px-4 py-3 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
+                className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-md px-4 py-3 text-base outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
                 placeholder="Ex: romulo"
                 maxLength={20}
               />
@@ -456,7 +482,7 @@ export default function App() {
                 type="text"
                 value={roomCode}
                 onChange={(e) => setRoomCode(e.target.value.toLowerCase())}
-                className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-md px-4 py-3 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
+                className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-md px-4 py-3 text-base outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
                 placeholder="ex: sala-secreta"
                 maxLength={30}
               />
@@ -494,7 +520,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-zinc-800 font-sans text-zinc-100 overflow-hidden">
+    <div className="flex h-[100dvh] bg-zinc-800 font-sans text-zinc-100 overflow-hidden">
       {Object.entries(remoteStreams).map(([userId, stream]) => {
         const mediaStream = stream as MediaStream;
         if (!mediaStream || typeof mediaStream.getTracks !== 'function') return null;
@@ -535,7 +561,7 @@ export default function App() {
               {channels.map(channel => (
                 <li key={channel.id} className="mb-1">
                   <button
-                    onClick={() => setActiveChannelId(channel.id)}
+                    onClick={() => handleChannelSelect(channel.id)}
                     className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${activeChannelId === channel.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/50'}`}
                   >
                     <Hash className="w-4 h-4 shrink-0" />
@@ -580,7 +606,7 @@ export default function App() {
                   onChange={(e) => setNewChannelName(e.target.value)}
                   onBlur={() => setIsCreatingChannel(false)}
                   placeholder="Nome da pasta..."
-                  className="w-full bg-zinc-950 border border-zinc-700 text-white rounded px-2 py-1.5 text-sm outline-none focus:border-indigo-500"
+                  className="w-full bg-zinc-950 border border-zinc-700 text-white rounded px-2 py-1.5 text-base md:text-sm outline-none focus:border-indigo-500"
                 />
               </form>
             ) : (
@@ -720,14 +746,14 @@ export default function App() {
         </div>
 
         {/* Input */}
-        <div className="px-4 pb-6 pt-2 shrink-0 bg-[#313338]">
+        <div className="px-3 md:px-4 pb-4 md:pb-6 pt-2 shrink-0 bg-[#313338]">
           <form onSubmit={handleSendMessage} className="relative">
             <input
               type="text"
               value={messageInput}
               onChange={(e) => setMessageInput(e.target.value)}
               placeholder={`Conversar em #${channels.find(c => c.id === activeChannelId)?.name || 'geral'}`}
-              className="w-full bg-[#383a40] text-zinc-100 rounded-lg pl-4 pr-12 py-3.5 outline-none focus:ring-0 placeholder-zinc-500"
+              className="w-full bg-[#383a40] text-zinc-100 rounded-lg pl-3 md:pl-4 pr-12 py-3 text-base md:text-sm outline-none focus:ring-0 placeholder-zinc-500"
               autoFocus
             />
             <button 
