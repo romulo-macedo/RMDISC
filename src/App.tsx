@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Users, Hash, LogOut, MessageSquare, Menu, Plus, Mic, MicOff, Volume2 } from 'lucide-react';
+import { Send, Users, Hash, LogOut, MessageSquare, Menu, Plus, Mic, MicOff, Volume2, VolumeX, Bold, Italic, Strikethrough, Code, ListTodo, Timer, Calculator, X, Play, Pause, Square, Check, Trash2, Minus, History, RotateCcw, Flag, Save } from 'lucide-react';
 import Peer, { DataConnection, MediaConnection } from 'peerjs';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -23,14 +23,350 @@ interface User {
   username: string;
 }
 
-function AudioPlayer({ stream }: { stream: MediaStream }) {
+function AudioPlayer({ stream, volume = 1, muted = false }: { stream: MediaStream, volume?: number, muted?: boolean }) {
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
     if (ref.current && stream) {
       ref.current.srcObject = stream;
     }
   }, [stream]);
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.volume = volume;
+      ref.current.muted = muted;
+    }
+  }, [volume, muted]);
+
   return <audio ref={ref} autoPlay />;
+}
+
+function TodoTool({ isActive, onClose }: { isActive: boolean, onClose: () => void }) {
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [tasks, setTasks] = useState<{id: string, text: string, done: boolean}[]>([]);
+  const [input, setInput] = useState('');
+
+  const addTask = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+    setTasks([...tasks, { id: uuidv4(), text: input.trim(), done: false }]);
+    setInput('');
+  };
+
+  const toggleTask = (id: string) => {
+    setTasks(tasks.map(t => t.id === id ? { ...t, done: !t.done } : t));
+  };
+
+  const removeTask = (id: string) => {
+    setTasks(tasks.filter(t => t.id !== id));
+  };
+
+  return (
+    <div className={`absolute top-16 right-4 md:right-8 w-80 bg-zinc-800 border border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col ${isActive ? 'flex' : 'hidden'} max-h-[400px]`}>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700 bg-zinc-900/50">
+        <h3 className="font-bold flex items-center gap-2"><ListTodo className="w-4 h-4 text-indigo-400" /> Tarefas do Dia</h3>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setIsMinimized(!isMinimized)} className="p-1 text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-700"><Minus className="w-4 h-4" /></button>
+          <button onClick={onClose} className="p-1 text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-700"><X className="w-4 h-4" /></button>
+        </div>
+      </div>
+      {!isMinimized && (
+        <>
+          <div className="p-4 flex-1 overflow-y-auto space-y-2 bg-[#2b2d31]">
+            {tasks.length === 0 && <p className="text-center text-sm text-zinc-500 py-4">Nenhuma tarefa agendada para hoje.</p>}
+            {tasks.map(t => (
+              <div key={t.id} className={`flex items-start gap-3 p-2 rounded-md transition-colors ${t.done ? 'bg-zinc-800/50' : 'bg-zinc-800 hover:bg-zinc-700'}`}>
+                <button onClick={() => toggleTask(t.id)} className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${t.done ? 'bg-green-500 border-green-500 text-white' : 'border-zinc-500 text-transparent'}`}>
+                  <Check className="w-3 h-3" />
+                </button>
+                <span className={`flex-1 text-sm ${t.done ? 'line-through text-zinc-500' : 'text-zinc-200'}`}>{t.text}</span>
+                <button onClick={() => removeTask(t.id)} className="text-zinc-500 hover:text-red-400 shrink-0 opacity-50 md:opacity-0 md:group-hover:opacity-100 transition-opacity" title="Excluir tarefa">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <form onSubmit={addTask} className="p-3 border-t border-zinc-700 bg-zinc-900/50 flex gap-2">
+            <input 
+              type="text" 
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              placeholder="Adicionar tarefa..." 
+              className="flex-1 bg-zinc-950 text-sm text-white rounded outline-none px-3 py-2 border border-zinc-700 focus:border-indigo-500"
+            />
+            <button type="submit" disabled={!input.trim()} className="flex items-center gap-1 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 disabled:hover:bg-indigo-500 text-white px-3 py-2 rounded text-sm font-medium transition-colors">
+              <Save className="w-4 h-4" /> Salvar
+            </button>
+          </form>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StopwatchTool({ isActive, onClose }: { isActive: boolean, onClose: () => void }) {
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [mode, setMode] = useState<'STOPWATCH' | 'TIMER'>('STOPWATCH');
+
+  // Stopwatch state
+  const [swTime, setSwTime] = useState(0);
+  const [swRunning, setSwRunning] = useState(false);
+  const [laps, setLaps] = useState<{lap: number, time: string}[]>([]);
+
+  // Timer state
+  const [timerInitial, setTimerInitial] = useState(5 * 60000); // 5 min default
+  const [timerTime, setTimerTime] = useState(5 * 60000);
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [customMins, setCustomMins] = useState('5');
+  const [customSecs, setCustomSecs] = useState('0');
+
+  useEffect(() => {
+    let interval: any;
+    if (swRunning) {
+      interval = setInterval(() => setSwTime(t => t + 10), 10);
+    }
+    return () => clearInterval(interval);
+  }, [swRunning]);
+
+  useEffect(() => {
+    let interval: any;
+    if (timerRunning) {
+      interval = setInterval(() => {
+        setTimerTime(t => {
+          if (t <= 10) {
+            setTimerRunning(false);
+            return 0;
+          }
+          return t - 10;
+        });
+      }, 10);
+    }
+    return () => clearInterval(interval);
+  }, [timerRunning]);
+
+  const formatTime = (ms: number) => {
+    const mins = Math.floor(ms / 60000);
+    const secs = Math.floor((ms % 60000) / 1000);
+    const milis = Math.floor((ms % 1000) / 10);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${milis.toString().padStart(2, '0')}`;
+  };
+
+  const handleStopwatchLap = () => {
+    setLaps(prev => [...prev, { lap: prev.length + 1, time: formatTime(swTime) }]);
+  };
+
+  const setTimerMinutes = (mins: number) => {
+     setTimerInitial(mins * 60000);
+     setTimerTime(mins * 60000);
+     setCustomMins(mins.toString());
+     setCustomSecs('0');
+  };
+
+  return (
+    <div className={`absolute top-16 right-4 md:right-8 w-72 bg-zinc-800 border border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col ${isActive ? 'flex' : 'hidden'}`}>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700 bg-zinc-900/50">
+        <h3 className="font-bold flex items-center gap-2"><Timer className="w-4 h-4 text-emerald-400" /> Relógio</h3>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setIsMinimized(!isMinimized)} className="p-1 text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-700"><Minus className="w-4 h-4" /></button>
+          <button onClick={onClose} className="p-1 text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-700"><X className="w-4 h-4" /></button>
+        </div>
+      </div>
+      
+      {!isMinimized && (
+        <>
+          <div className="flex border-b border-zinc-700 bg-[#2b2d31]">
+             <button onClick={() => setMode('STOPWATCH')} className={`flex-1 py-2 text-xs font-bold transition-colors ${mode === 'STOPWATCH' ? 'text-emerald-400 border-b-2 border-emerald-400 bg-emerald-500/10' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}`}>CRONÔMETRO</button>
+             <button onClick={() => setMode('TIMER')} className={`flex-1 py-2 text-xs font-bold transition-colors ${mode === 'TIMER' ? 'text-emerald-400 border-b-2 border-emerald-400 bg-emerald-500/10' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}`}>TIMER</button>
+          </div>
+
+          <div className="p-6 bg-[#2b2d31] flex flex-col items-center gap-6">
+            <div className="text-4xl font-mono tracking-wider font-bold text-emerald-400">
+              {formatTime(mode === 'STOPWATCH' ? swTime : timerTime)}
+            </div>
+
+            {mode === 'TIMER' && !timerRunning && timerTime === timerInitial && (
+               <div className="flex flex-col items-center gap-3 w-full">
+                 <div className="flex gap-2 text-xs w-full justify-center">
+                    {[1, 5, 10, 25].map(m => (
+                      <button key={m} onClick={() => setTimerMinutes(m)} className="bg-zinc-700 hover:bg-zinc-600 text-white px-3 py-1.5 rounded font-medium transition-colors">+{m}m</button>
+                    ))}
+                 </div>
+                 <div className="flex items-center gap-2 text-xs bg-zinc-900/50 p-2 rounded-lg border border-zinc-700/50">
+                    <span className="text-zinc-400 font-medium whitespace-nowrap">Ou digite:</span>
+                    <input 
+                      type="number" 
+                      min="0" 
+                      max="999"
+                      placeholder="00"
+                      value={customMins}
+                      onChange={(e) => {
+                        setCustomMins(e.target.value);
+                        const m = parseInt(e.target.value) || 0;
+                        const s = parseInt(customSecs) || 0;
+                        const total = (m * 60 + s) * 1000;
+                        setTimerInitial(total);
+                        setTimerTime(total);
+                      }}
+                      className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1.5 py-1 text-white text-center outline-none focus:border-emerald-500"
+                    />
+                    <span className="text-zinc-500 font-medium">m</span>
+                    
+                    <input 
+                      type="number" 
+                      min="0" 
+                      max="59"
+                      placeholder="00"
+                      value={customSecs}
+                      onChange={(e) => {
+                        setCustomSecs(e.target.value);
+                        const m = parseInt(customMins) || 0;
+                        const s = parseInt(e.target.value) || 0;
+                        const total = (m * 60 + s) * 1000;
+                        setTimerInitial(total);
+                        setTimerTime(total);
+                      }}
+                      className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1.5 py-1 text-white text-center outline-none focus:border-emerald-500"
+                    />
+                    <span className="text-zinc-500 font-medium">s</span>
+                 </div>
+               </div>
+            )}
+
+            <div className="flex gap-4">
+              <button 
+                onClick={() => mode === 'STOPWATCH' ? setSwRunning(!swRunning) : setTimerRunning(!timerRunning)}
+                className="w-10 h-10 rounded-full flex items-center justify-center bg-zinc-700 hover:bg-zinc-600 text-white transition-colors"
+                title={swRunning || timerRunning ? "Pausar" : "Iniciar"}
+              >
+                {(mode === 'STOPWATCH' ? swRunning : timerRunning) ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 translate-x-0.5" />}
+              </button>
+              
+              {mode === 'STOPWATCH' && swRunning && (
+                <button onClick={handleStopwatchLap} className="w-10 h-10 rounded-full flex items-center justify-center bg-zinc-700 hover:bg-zinc-600 text-blue-400 transition-colors" title="Salvar tempo (Lap)">
+                  <Flag className="w-4 h-4" />
+                </button>
+              )}
+
+              <button 
+                onClick={() => { 
+                   if (mode === 'STOPWATCH') { setSwRunning(false); setSwTime(0); setLaps([]); }
+                   else { setTimerRunning(false); setTimerTime(timerInitial); }
+                }}
+                className="w-10 h-10 rounded-full flex items-center justify-center bg-zinc-700 hover:bg-zinc-600 text-red-400 transition-colors"
+                title="Zerar"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          
+          {mode === 'STOPWATCH' && laps.length > 0 && (
+             <div className="max-h-32 overflow-y-auto bg-zinc-900 border-t border-zinc-700 text-xs">
+                {laps.map((l, i) => (
+                   <div key={i} className="flex justify-between px-4 py-2 border-b border-zinc-800 text-zinc-300">
+                      <span>Lap {l.lap}</span>
+                      <span className="font-mono text-emerald-400">{l.time}</span>
+                   </div>
+                )).reverse()}
+             </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CalculatorTool({ isActive, onClose }: { isActive: boolean, onClose: () => void }) {
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [display, setDisplay] = useState('0');
+  const [equation, setEquation] = useState('');
+
+  const handleInput = (val: string) => {
+    if (val === 'C') {
+      setDisplay('0');
+      setEquation('');
+    } else if (val === '=') {
+      try {
+        const result = new Function('return ' + display.replace(/x/g, '*').replace(/÷/g, '/'))();
+        setEquation(display + ' =');
+        setDisplay(String(result));
+      } catch {
+        setDisplay('Erro');
+      }
+    } else if (val === 'DEL') {
+       setDisplay(prev => prev.length > 1 && prev !== 'Erro' ? prev.slice(0, -1) : '0');
+    } else {
+      setDisplay(prev => prev === '0' || prev === 'Erro' ? val : prev + val);
+    }
+  };
+
+  useEffect(() => {
+    if (!isActive || isMinimized) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key;
+      if (/[0-9]/.test(key)) handleInput(key);
+      else if (key === '.') handleInput('.');
+      else if (key === '+' || key === '-') handleInput(key);
+      else if (key === '*' || key === 'x') handleInput('x');
+      else if (key === '/') handleInput('÷');
+      else if (key === '(' || key === ')') handleInput(key);
+      else if (key === 'Enter' || key === '=') {
+         e.preventDefault();
+         handleInput('=');
+      }
+      else if (key === 'Escape' || key.toLowerCase() === 'c') handleInput('C');
+      else if (key === 'Backspace') handleInput('DEL');
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isActive, isMinimized, display]);
+
+  const buttons = [
+    'C', '(', ')', '÷',
+    '7', '8', '9', 'x',
+    '4', '5', '6', '-',
+    '1', '2', '3', '+',
+    '0', '.', '=', ''
+  ];
+
+  return (
+    <div className={`absolute top-16 right-4 md:right-8 w-64 bg-zinc-800 border border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col ${isActive ? 'flex' : 'hidden'}`}>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700 bg-zinc-900/50">
+        <h3 className="font-bold flex items-center gap-2"><Calculator className="w-4 h-4 text-blue-400" /> Calculadora</h3>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setIsMinimized(!isMinimized)} className="p-1 text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-700"><Minus className="w-4 h-4" /></button>
+          <button onClick={onClose} className="p-1 text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-700"><X className="w-4 h-4" /></button>
+        </div>
+      </div>
+      {!isMinimized && (
+        <div className="p-4 bg-[#2b2d31]">
+          <div className="bg-zinc-950 rounded p-3 mb-4 text-right overflow-hidden flex flex-col justify-end min-h-[70px]">
+            <div className="text-zinc-500 text-xs h-4">{equation}</div>
+            <div className="text-2xl font-bold text-white tracking-wider truncate">{display}</div>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {buttons.map((btn, i) => (
+              btn ? (
+                <button
+                  key={i}
+                  onClick={() => handleInput(btn)}
+                  className={`py-2 rounded font-medium transition-colors ${
+                    ['÷', 'x', '-', '+', '='].includes(btn) ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 
+                    btn === 'C' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 
+                    'bg-zinc-700 hover:bg-zinc-600 text-zinc-200'
+                  }`}
+                >
+                  {btn}
+                </button>
+              ) : <div key={i} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -49,12 +385,18 @@ export default function App() {
   const [messageInput, setMessageInput] = useState('');
   const [error, setError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeTool, setActiveTool] = useState<'TODO' | 'TIMER' | 'CALC' | null>(null);
+  const [showHostWarning, setShowHostWarning] = useState(false);
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [isMuted, setIsMuted] = useState(false);
+  const [notifications, setNotifications] = useState<{id: string, text: string}[]>([]);
+  const [remoteSettings, setRemoteSettings] = useState<Record<string, { volume: number, muted: boolean }>>({});
+  const prevUsersRef = useRef<User[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const activeChannelIdRef = useRef(activeChannelId);
   const isMutedRef = useRef(isMuted);
   const myUserIdRef = useRef<string>(myUserId);
@@ -82,6 +424,22 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    if (chatUsers.length > prevUsersRef.current.length && prevUsersRef.current.length > 0) {
+      const newUsers = chatUsers.filter(u => !prevUsersRef.current.find(pu => pu.id === u.id));
+      newUsers.forEach(u => {
+        if (u.id !== myUserId) {
+           const notifId = uuidv4();
+           setNotifications(prev => [...prev, { id: notifId, text: `${u.username} entrou na sala` }]);
+           setTimeout(() => {
+              setNotifications(prev => prev.filter(n => n.id !== notifId));
+           }, 4000);
+        }
+      });
+    }
+    prevUsersRef.current = chatUsers;
+  }, [chatUsers, myUserId]);
+
   const toggleMute = () => {
     if (localStream) {
       localStream.getAudioTracks().forEach(track => {
@@ -89,6 +447,17 @@ export default function App() {
       });
     }
     setIsMuted(!isMuted);
+  };
+
+  const handleRemoteVolume = (userId: string, volume: number) => {
+    setRemoteSettings(prev => ({ ...prev, [userId]: { ...(prev[userId] || { muted: false }), volume } }));
+  };
+
+  const toggleRemoteMute = (userId: string) => {
+    setRemoteSettings(prev => ({ 
+      ...prev, 
+      [userId]: { ...(prev[userId] || { volume: 1 }), muted: !(prev[userId]?.muted ?? false) } 
+    }));
   };
 
   const handleCreateRoom = (e: React.FormEvent) => {
@@ -107,6 +476,7 @@ export default function App() {
       setMyUserId(id);
       setMode('HOST');
       setError('');
+      setShowHostWarning(true);
 
       hostStateRef.current.users = [{ id, username: username.trim() }];
       syncHostStateToUI();
@@ -169,18 +539,18 @@ export default function App() {
       });
 
       conn.on('close', () => {
-        handleLeave();
+        handleLeave('O host finalizou a sessão. Todos os dados foram perdidos. Outra pessoa deverá criar uma nova sessão para continuar a conversa.');
       });
 
       conn.on('error', () => {
-        setError('O Host desconectou ou não foi encontrado.');
+        handleLeave('O Host desconectou ou ocorreu um erro na rede.');
       });
     });
 
     peer.on('call', handleIncomingCall);
     peer.on('error', (err) => {
       console.error(err);
-      setError('Erro de conexão P2P.');
+      setError('Erro de conexão P2P. O Host desconectou ou não foi encontrado.');
     });
 
     peerRef.current = peer;
@@ -407,6 +777,48 @@ export default function App() {
   }, [activeChannelId, mode]);
 
   // --- UI ACTIONS --- //
+  const insertFormat = (format: string) => {
+    const input = inputRef.current;
+    if (!input) return;
+
+    const start = input.selectionStart || 0;
+    const end = input.selectionEnd || 0;
+    const text = messageInput;
+
+    let newText = '';
+    let newCursorPos = 0;
+
+    if (start !== end) {
+      newText = text.substring(0, start) + format + text.substring(start, end) + format + text.substring(end);
+      newCursorPos = end + format.length * 2;
+    } else {
+      newText = text.substring(0, start) + format + format + text.substring(start);
+      newCursorPos = start + format.length;
+    }
+
+    setMessageInput(newText);
+
+    setTimeout(() => {
+      input.focus();
+      input.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  };
+
+  const formatMessageText = (text: string) => {
+    // Basic markdown-like formatting for bold, italic, strikethrough, code, and links
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const parts = text.split(/(\*\*.*?\*\*|\*.*?\*|~~.*?~~|`.*?`|https?:\/\/[^\s]+)/g);
+    
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**') && part !== '****') return <strong key={i} className="font-bold text-white">{part.slice(2, -2)}</strong>;
+      if (part.startsWith('*') && part.endsWith('*') && part !== '**' && part !== '*') return <em key={i} className="italic text-zinc-300">{part.slice(1, -1)}</em>;
+      if (part.startsWith('~~') && part.endsWith('~~') && part !== '~~~~') return <del key={i} className="line-through opacity-70">{part.slice(2, -2)}</del>;
+      if (part.startsWith('`') && part.endsWith('`') && part !== '``' && part !== '`') return <code key={i} className="bg-zinc-900 border border-zinc-700 text-indigo-300 px-1.5 py-0.5 rounded text-sm font-mono whitespace-pre-wrap">{part.slice(1, -1)}</code>;
+      if (part.match(urlRegex)) return <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300 hover:underline">{part}</a>;
+      return <span key={i}>{part}</span>;
+    });
+  };
+
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageInput.trim()) return;
@@ -433,7 +845,7 @@ export default function App() {
     setIsCreatingChannel(false);
   };
 
-  const handleLeave = () => {
+  const handleLeave = (customError?: string) => {
     if (peerRef.current) {
       peerRef.current.destroy();
     }
@@ -441,7 +853,7 @@ export default function App() {
     setMessages([]);
     setChatUsers([]);
     setChannels([]);
-    setError('');
+    setError(customError || '');
     // Remote streams are cleared by unmount or voice hooks
   };
 
@@ -488,7 +900,11 @@ export default function App() {
               />
             </div>
             
-            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-sm p-3 rounded-lg leading-relaxed">
+                {error}
+              </div>
+            )}
             
             <div className="flex flex-col gap-3 pt-4">
               <button
@@ -520,12 +936,45 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-[100dvh] bg-zinc-800 font-sans text-zinc-100 overflow-hidden">
-      {Object.entries(remoteStreams).map(([userId, stream]) => {
-        const mediaStream = stream as MediaStream;
-        if (!mediaStream || typeof mediaStream.getTracks !== 'function') return null;
-        return <AudioPlayer key={userId} stream={mediaStream} />;
-      })}
+    <div className="flex h-[100dvh] bg-zinc-800 font-sans text-zinc-100 overflow-hidden relative">
+      {/* Host Warning Modal */}
+      {showHostWarning && (
+        <div className="fixed inset-0 bg-black/80 z-[200] flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-red-500/30 rounded-xl p-6 md:p-8 max-w-md w-full shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-1 bg-red-500"></div>
+            <h2 className="text-xl md:text-2xl font-bold text-white mb-4 flex items-center gap-2">
+              <span className="text-red-400">⚠️</span> Atenção Host!
+            </h2>
+            <p className="text-zinc-300 mb-6 leading-relaxed">
+              Você acabou de criar e hospedar esta sala no seu computador. <strong className="text-white">Se você fechar esta janela, aba, ou desligar sua máquina</strong>, todos os dados dessa sala serão perdidos e seus convidados serão desconectados imediatamente.
+            </p>
+            <button 
+              onClick={() => setShowHostWarning(false)}
+              className="w-full bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-lg transition-colors border border-red-400/50"
+            >
+              Entendi, vou manter a página aberta
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="absolute top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+        {notifications.map(n => (
+          <div key={n.id} className="bg-zinc-800 border border-zinc-700 shadow-xl rounded-lg px-4 py-3 flex items-center gap-3 transform transition-all text-sm text-zinc-100 font-medium">
+             <div className="h-2 w-2 bg-green-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(74,222,128,0.6)]"></div>
+             {n.text}
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden">
+        {Object.entries(remoteStreams).map(([userId, stream]) => {
+          const mediaStream = stream as MediaStream;
+          if (!mediaStream || typeof mediaStream.getTracks !== 'function') return null;
+          const settings = remoteSettings[userId] || { volume: 1, muted: false };
+          return <AudioPlayer key={userId} stream={mediaStream} volume={settings.volume} muted={settings.muted} />;
+        })}
+      </div>
       
       {sidebarOpen && (
         <div 
@@ -579,15 +1028,38 @@ export default function App() {
                       {channel.voiceUsers.map(vuId => {
                          const u = chatUsers.find(usr => usr.id === vuId);
                          if (!u) return null;
+                         const isMe = vuId === myUserId;
+                         const settings = remoteSettings[vuId] || { volume: 1, muted: false };
+
                          return (
-                           <div key={vuId} className="flex items-center gap-2 text-xs text-zinc-400">
-                             <div className="relative w-5 h-5 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-300 font-bold shrink-0 text-[10px]">
-                               {u.username.charAt(0).toUpperCase()}
-                               <div className="absolute -bottom-0.5 -right-0.5 bg-zinc-900 rounded-full">
-                                <Volume2 className="w-2.5 h-2.5 text-green-400" />
+                           <div key={vuId} className="flex flex-col gap-1 text-xs text-zinc-400 group">
+                             <div className="flex items-center gap-2">
+                               <div className="relative w-5 h-5 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-300 font-bold shrink-0 text-[10px]">
+                                 {u.username.charAt(0).toUpperCase()}
                                </div>
+                               <span className="truncate">{u.username}</span>
+                               
+                               {!isMe && activeChannelId === channel.id && (
+                                 <div className="flex items-center gap-1 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); toggleRemoteMute(vuId); }}
+                                      className="hover:text-white"
+                                    >
+                                      {settings.muted || settings.volume === 0 ? <VolumeX className="w-3 h-3 text-red-400" /> : <Volume2 className="w-3 h-3 text-green-400" />}
+                                    </button>
+                                    <input 
+                                      type="range" 
+                                      min="0" 
+                                      max="1" 
+                                      step="0.01" 
+                                      value={settings.muted ? 0 : settings.volume} 
+                                      onChange={(e) => { e.stopPropagation(); handleRemoteVolume(vuId, parseFloat(e.target.value)); }} 
+                                      className="w-12 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer"
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                 </div>
+                               )}
                              </div>
-                             <span className="truncate">{u.username}</span>
                            </div>
                          );
                       })}
@@ -659,7 +1131,7 @@ export default function App() {
               </button>
             )}
             <button 
-              onClick={handleLeave}
+              onClick={() => handleLeave()}
               className="p-2 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded-md transition-colors"
               title="Sair da sala"
             >
@@ -670,7 +1142,11 @@ export default function App() {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#313338]">
+      <div className="flex-1 flex flex-col min-w-0 bg-[#313338] relative">
+        <TodoTool isActive={activeTool === 'TODO'} onClose={() => setActiveTool(null)} />
+        <StopwatchTool isActive={activeTool === 'TIMER'} onClose={() => setActiveTool(null)} />
+        <CalculatorTool isActive={activeTool === 'CALC'} onClose={() => setActiveTool(null)} />
+
         <header className="h-14 flex items-center px-4 border-b border-zinc-900 shadow-sm shrink-0 bg-[#313338]">
           <button 
             className="md:hidden mr-4 text-zinc-400 hover:text-zinc-200"
@@ -683,6 +1159,32 @@ export default function App() {
             <span className="text-lg pb-0.5 bg-clip-text text-transparent bg-gradient-to-r from-zinc-100 to-zinc-400">
               {channels.find(c => c.id === activeChannelId)?.name || 'geral'}
             </span>
+          </div>
+
+          <div className="ml-auto flex items-center gap-2">
+            <div className="border border-indigo-500/30 bg-indigo-500/5 rounded-lg p-1 flex items-center gap-1 shadow-sm">
+              <button 
+                onClick={() => setActiveTool(activeTool === 'TODO' ? null : 'TODO')}
+                className={`p-1.5 rounded-md transition-colors ${activeTool === 'TODO' ? 'bg-indigo-500 text-white shadow-md' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50'}`}
+                title="Lista de Tarefas"
+              >
+                <ListTodo className="w-5 h-5" />
+              </button>
+              <button 
+                onClick={() => setActiveTool(activeTool === 'TIMER' ? null : 'TIMER')}
+                className={`p-1.5 rounded-md transition-colors ${activeTool === 'TIMER' ? 'bg-emerald-500 text-white shadow-md' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50'}`}
+                title="Cronômetro"
+              >
+                <Timer className="w-5 h-5" />
+              </button>
+              <button 
+                onClick={() => setActiveTool(activeTool === 'CALC' ? null : 'CALC')}
+                className={`p-1.5 rounded-md transition-colors ${activeTool === 'CALC' ? 'bg-blue-500 text-white shadow-md' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50'}`}
+                title="Calculadora"
+              >
+                <Calculator className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </header>
 
@@ -737,7 +1239,7 @@ export default function App() {
                       </span>
                     </div>
                   )}
-                  <p className="text-zinc-200 break-words leading-relaxed">{msg.text}</p>
+                  <p className="text-zinc-200 break-words leading-relaxed whitespace-pre-wrap">{formatMessageText(msg.text)}</p>
                 </div>
               </div>
             );
@@ -747,23 +1249,43 @@ export default function App() {
 
         {/* Input */}
         <div className="px-3 md:px-4 pb-4 md:pb-6 pt-2 shrink-0 bg-[#313338]">
-          <form onSubmit={handleSendMessage} className="relative">
-            <input
-              type="text"
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              placeholder={`Conversar em #${channels.find(c => c.id === activeChannelId)?.name || 'geral'}`}
-              className="w-full bg-[#383a40] text-zinc-100 rounded-lg pl-3 md:pl-4 pr-12 py-3 text-base md:text-sm outline-none focus:ring-0 placeholder-zinc-500"
-              autoFocus
-            />
-            <button 
-              type="submit"
-              disabled={!messageInput.trim()}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-zinc-400 hover:text-indigo-400 disabled:opacity-50 disabled:hover:text-zinc-400 transition-colors"
-            >
-              <Send className="w-5 h-5" />
-            </button>
-          </form>
+          <div className="bg-[#383a40] rounded-lg focus-within:ring-1 focus-within:ring-indigo-500 transition-shadow">
+            {/* Toolbar */}
+            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-zinc-700/50">
+              <button type="button" onClick={() => insertFormat('**')} className="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50 rounded transition-colors" title="Negrito">
+                <Bold className="w-4 h-4" />
+              </button>
+              <button type="button" onClick={() => insertFormat('*')} className="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50 rounded transition-colors" title="Itálico">
+                <Italic className="w-4 h-4" />
+              </button>
+              <button type="button" onClick={() => insertFormat('~~')} className="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50 rounded transition-colors" title="Tachado">
+                <Strikethrough className="w-4 h-4" />
+              </button>
+              <div className="w-px h-4 bg-zinc-700 mx-1"></div>
+              <button type="button" onClick={() => insertFormat('`')} className="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50 rounded transition-colors" title="Código">
+                <Code className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <form onSubmit={handleSendMessage} className="relative">
+              <input
+                ref={inputRef}
+                type="text"
+                value={messageInput}
+                onChange={(e) => setMessageInput(e.target.value)}
+                placeholder={`Conversar em #${channels.find(c => c.id === activeChannelId)?.name || 'geral'}`}
+                className="w-full bg-transparent text-zinc-100 pl-3 md:pl-4 pr-12 py-3 text-base md:text-sm outline-none placeholder-zinc-500"
+                autoFocus
+              />
+              <button 
+                type="submit"
+                disabled={!messageInput.trim()}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-zinc-400 hover:text-indigo-400 disabled:opacity-50 disabled:hover:text-zinc-400 transition-colors"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     </div>
