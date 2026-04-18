@@ -1,0 +1,8 @@
+{
+  "name": "Live Chat",
+  "description": "Voice and text channels",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
