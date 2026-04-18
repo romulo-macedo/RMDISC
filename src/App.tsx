@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Users, Hash, LogOut, MessageSquare, Menu, Plus, Mic, Volume2 } from 'lucide-react';
+import { Send, Users, Hash, LogOut, MessageSquare, Menu, Plus, Mic, MicOff, Volume2 } from 'lucide-react';
 
 interface ChatMessage {
   id: string;
@@ -51,6 +51,7 @@ export default function App() {
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+  const [isMuted, setIsMuted] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -58,10 +59,21 @@ export default function App() {
   const localStreamRef = useRef<MediaStream | null>(localStream);
   const myUserIdRef = useRef<string>(myUserId);
   const peersRef = useRef<Record<string, RTCPeerConnection>>({});
+  const isMutedRef = useRef(isMuted);
 
   useEffect(() => { activeChannelIdRef.current = activeChannelId; }, [activeChannelId]);
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
   useEffect(() => { myUserIdRef.current = myUserId; }, [myUserId]);
+  useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
+
+  const toggleMute = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach(track => {
+        track.enabled = isMuted;
+      });
+    }
+    setIsMuted(!isMuted);
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -264,6 +276,9 @@ export default function App() {
             s.getTracks().forEach(t => t.stop());
             return;
           }
+          s.getAudioTracks().forEach(t => {
+            t.enabled = !isMutedRef.current;
+          });
           stream = s;
           setLocalStream(s);
           if (ws.readyState === WebSocket.OPEN) {
@@ -414,7 +429,11 @@ export default function App() {
                     <Hash className="w-4 h-4 shrink-0" />
                     <span className="truncate text-sm font-medium">{channel.name}</span>
                     {activeChannelId === channel.id && localStream && (
-                      <Mic className="w-3 h-3 text-green-400 ml-auto shrink-0" />
+                      isMuted ? (
+                        <MicOff className="w-3 h-3 text-red-400 ml-auto shrink-0" />
+                      ) : (
+                        <Mic className="w-3 h-3 text-green-400 ml-auto shrink-0" />
+                      )
                     )}
                   </button>
                   {channel.voiceUsers && channel.voiceUsers.length > 0 && (
@@ -484,20 +503,31 @@ export default function App() {
           </div>
         </div>
 
-        <div className="p-4 bg-zinc-950 flex items-center justify-between">
+        <div className="p-4 bg-zinc-950 flex items-center justify-between mt-auto">
           <div className="flex items-center gap-2 overflow-hidden">
              <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white font-bold shrink-0">
                 {username.charAt(0).toUpperCase()}
              </div>
              <div className="text-sm font-medium truncate">{username}</div>
           </div>
-          <button 
-            onClick={handleLeave}
-            className="p-2 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded-md transition-colors"
-            title="Sair da sala"
-          >
-            <LogOut className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            {localStream && (
+              <button
+                onClick={toggleMute}
+                className={`p-2 rounded-md transition-colors ${isMuted ? 'text-red-400 bg-red-400/10 hover:bg-red-400/20' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}`}
+                title={isMuted ? "Desmutar Microfone" : "Mutar Microfone"}
+              >
+                {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+              </button>
+            )}
+            <button 
+              onClick={handleLeave}
+              className="p-2 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded-md transition-colors"
+              title="Sair da sala"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </div>
 
