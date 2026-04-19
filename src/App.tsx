@@ -387,6 +387,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTool, setActiveTool] = useState<'TODO' | 'TIMER' | 'CALC' | null>(null);
   const [showHostWarning, setShowHostWarning] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
@@ -467,12 +468,14 @@ export default function App() {
       return;
     }
     
+    setIsConnecting(true);
     const hostPeerId = `chat-live-${roomCode.trim().toLowerCase()}`;
     const peer = new Peer(hostPeerId, {
       debug: 2
     });
 
     peer.on('open', (id) => {
+      setIsConnecting(false);
       setMyUserId(id);
       setMode('HOST');
       setError('');
@@ -499,6 +502,7 @@ export default function App() {
 
     peer.on('call', handleIncomingCall);
     peer.on('error', (err) => {
+      setIsConnecting(false);
       console.error(err);
       setError('Erro ao criar sala. Talvez o código já esteja em uso por outro Host.');
     });
@@ -513,6 +517,7 @@ export default function App() {
       return;
     }
 
+    setIsConnecting(true);
     const hostPeerId = `chat-live-${roomCode.trim().toLowerCase()}`;
     // Random ID for guest
     const peer = new Peer({ debug: 2 });
@@ -523,7 +528,7 @@ export default function App() {
       const conn = peer.connect(hostPeerId);
       conn.on('open', () => {
         guestDataConnectionRef.current = conn;
-        setMode('GUEST');
+        // We defer setMode('GUEST') until we receive the first STATE_SYNC to ensure channels are populated
         setError('');
 
         conn.send(JSON.stringify({
@@ -543,12 +548,14 @@ export default function App() {
       });
 
       conn.on('error', () => {
+        setIsConnecting(false);
         handleLeave('O Host desconectou ou ocorreu um erro na rede.');
       });
     });
 
     peer.on('call', handleIncomingCall);
     peer.on('error', (err) => {
+      setIsConnecting(false);
       console.error(err);
       setError('Erro de conexão P2P. O Host desconectou ou não foi encontrado.');
     });
@@ -561,17 +568,30 @@ export default function App() {
     const s = hostStateRef.current;
     
     if (data.type === 'JOIN') {
-      s.users.push({ id: data.userId, username: data.username });
+      const existingUserIndex = s.users.findIndex(u => u.username === data.username);
       
-      const joinMsg: ChatMessage = {
-        id: uuidv4(),
-        userId: 'SYSTEM',
-        username: 'Sistema',
-        text: `${data.username} entrou na sala.`,
-        timestamp: Date.now(),
-        channelId: 'geral'
-      };
-      s.messages.push(joinMsg);
+      if (existingUserIndex !== -1) {
+        // Replace old session for reconnects
+        const oldUserId = s.users[existingUserIndex].id;
+        s.users[existingUserIndex].id = data.userId;
+        
+        // Remove old peer from voice channels to clear ghost presence
+        s.channels.forEach(c => {
+          c.voiceUsers = c.voiceUsers.filter(id => id !== oldUserId);
+        });
+      } else {
+        s.users.push({ id: data.userId, username: data.username });
+        
+        const joinMsg: ChatMessage = {
+          id: uuidv4(),
+          userId: 'SYSTEM',
+          username: 'Sistema',
+          text: `${data.username} entrou na sala.`,
+          timestamp: Date.now(),
+          channelId: 'geral'
+        };
+        s.messages.push(joinMsg);
+      }
       broadcastHostState();
     }
     else if (data.type === 'MESSAGE') {
@@ -656,6 +676,8 @@ export default function App() {
   // --- GUEST LOGIC --- //
   const handleGuestReceiveSync = (data: any) => {
     if (data.type === 'STATE_SYNC') {
+      setIsConnecting(false);
+      setMode(prev => prev === 'LOGIN' ? 'GUEST' : prev);
       setMessages(data.payload.messages);
       setChatUsers(data.payload.users);
       setChannels(data.payload.channels);
@@ -909,10 +931,11 @@ export default function App() {
             <div className="flex flex-col gap-3 pt-4">
               <button
                 onClick={handleJoinRoom}
+                disabled={isConnecting}
                 type="button"
-                className="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white font-medium py-3 rounded-md transition-colors"
+                className="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 rounded-md transition-colors"
               >
-                Entrar na Sala como Convidado
+                {isConnecting ? 'Conectando...' : 'Entrar na Sala como Convidado'}
               </button>
               
               <div className="relative flex py-2 items-center">
@@ -923,8 +946,9 @@ export default function App() {
 
               <button
                 onClick={handleCreateRoom}
+                disabled={isConnecting}
                 type="button"
-                className="w-full bg-zinc-700 hover:bg-zinc-600 active:bg-zinc-500 text-zinc-200 font-medium py-3 rounded-md transition-colors border border-zinc-600"
+                className="w-full bg-zinc-700 hover:bg-zinc-600 active:bg-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-200 font-medium py-3 rounded-md transition-colors border border-zinc-600"
               >
                 Criar / Hospedar Sala
               </button>
